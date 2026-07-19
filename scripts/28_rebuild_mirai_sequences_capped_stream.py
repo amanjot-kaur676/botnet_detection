@@ -2,17 +2,49 @@ import pandas as pd
 import numpy as np
 import glob
 import os
+import random
 
 SEQ_LEN = 10
 CHUNK_SIZE = 200_000
-SIZE_THRESHOLD_MB = 50  # files bigger than this use the chunked/rare-stage method
+SIZE_THRESHOLD_MB = 50
+CAP_PER_STAGE = 5000  # matches the final cap used later, so we never need to hold more than this in memory
 
 feature_cols = ["duration", "orig_bytes", "resp_bytes", "orig_pkts", "resp_pkts"]
-input_files = sorted(glob.glob("../data/stage_labeled/iot23_CTU-IoT-Malware-Capture-*_with_stage.csv"))
-output_dir = "../data/sequences/flow_seq_by_scenario"
+input_files = sorted(glob.glob("../data/stage_labeled_corrected/iot23_CTU-IoT-Malware-Capture-*_with_stage.csv"))
+output_dir = "../data/sequences/flow_seq_mirai_corrected"
 os.makedirs(output_dir, exist_ok=True)
 
-print(f"Found {len(input_files)} stage-labeled files.\n")
+print(f"Found {len(input_files)} corrected stage-labeled files.\n")
+
+VALID_LABELS = ("Scan", "Infect", "C2", "Impact", "Benign")
+
+random.seed(42)
+
+
+class ReservoirPerLabel:
+    """Keeps a random sample of at most `cap` sequences per label, seen-so-far correct (Algorithm R)."""
+    def __init__(self, cap):
+        self.cap = cap
+        self.reservoirs = {label: [] for label in VALID_LABELS}
+        self.seen_counts = {label: 0 for label in VALID_LABELS}
+
+    def add(self, label, item):
+        self.seen_counts[label] += 1
+        reservoir = self.reservoirs[label]
+        if len(reservoir) < self.cap:
+            reservoir.append(item)
+        else:
+            j = random.randint(0, self.seen_counts[label] - 1)
+            if j < self.cap:
+                reservoir[j] = item
+
+    def export(self):
+        sequences, labels = [], []
+        for label, items in self.reservoirs.items():
+            sequences.extend(items)
+            labels.extend([label] * len(items))
+        return sequences, labels
+
 
 summary = []
 
@@ -22,8 +54,9 @@ for file_path in input_files:
     output_path = os.path.join(output_dir, f"flow_seq_{scenario_name}.npz")
 
     try:
+        reservoir = ReservoirPerLabel(CAP_PER_STAGE)
+
         if size_mb <= SIZE_THRESHOLD_MB:
-            # SMALL FILE: keep every sequence, every stage
             df = pd.read_csv(file_path, low_memory=False)
             df = df.sort_values(by="ts").reset_index(drop=True)
             for col in feature_cols:
@@ -32,14 +65,12 @@ for file_path in input_files:
             feat_array = df[feature_cols].to_numpy()
             stage_array = df["stage"].to_numpy()
 
-            sequences, labels = [], []
             for i in range(SEQ_LEN, len(df)):
-                sequences.append(feat_array[i-SEQ_LEN:i])
-                labels.append(stage_array[i])
+                label = stage_array[i]
+                if label in VALID_LABELS:
+                    reservoir.add(label, feat_array[i-SEQ_LEN:i])
 
         else:
-            # LARGE FILE: chunked, rare-stages-only
-            sequences, labels = [], []
             leftover = None
             reader = pd.read_csv(file_path, chunksize=CHUNK_SIZE, low_memory=False)
 
@@ -56,11 +87,12 @@ for file_path in input_files:
 
                 for i in range(SEQ_LEN, len(chunk)):
                     label = stage_array[i]
-                    if label in ("Infect", "C2", "Impact", "Benign","Scan"):
-                        sequences.append(feat_array[i-SEQ_LEN:i])
-                        labels.append(label)
+                    if label in VALID_LABELS:
+                        reservoir.add(label, feat_array[i-SEQ_LEN:i])
 
                 leftover = chunk.iloc[-SEQ_LEN:].reset_index(drop=True)
+
+        sequences, labels = reservoir.export()
 
         if len(sequences) == 0:
             print(f"[SKIP] {scenario_name}: no sequences produced")
@@ -68,8 +100,9 @@ for file_path in input_files:
             continue
 
         np.savez(output_path, X=np.array(sequences), y=np.array(labels))
-        method = "full" if size_mb <= SIZE_THRESHOLD_MB else "rare-only"
-        print(f"[OK] {scenario_name} ({method}, {size_mb:.1f} MB): {len(sequences)} sequences saved")
+        method = "full" if size_mb <= SIZE_THRESHOLD_MB else "chunked+capped"
+        print(f"[OK] {scenario_name} ({method}, {size_mb:.1f} MB): {len(sequences)} sequences saved "
+              f"(seen counts: {reservoir.seen_counts})")
         summary.append((scenario_name, f"OK ({method})", len(sequences)))
 
     except Exception as e:

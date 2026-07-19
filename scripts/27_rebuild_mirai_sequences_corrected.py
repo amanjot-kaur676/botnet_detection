@@ -5,14 +5,20 @@ import os
 
 SEQ_LEN = 10
 CHUNK_SIZE = 200_000
-SIZE_THRESHOLD_MB = 50  # files bigger than this use the chunked/rare-stage method
+SIZE_THRESHOLD_MB = 50
 
 feature_cols = ["duration", "orig_bytes", "resp_bytes", "orig_pkts", "resp_pkts"]
-input_files = sorted(glob.glob("../data/stage_labeled/iot23_CTU-IoT-Malware-Capture-*_with_stage.csv"))
-output_dir = "../data/sequences/flow_seq_by_scenario"
+
+# CHANGED: read from the Okiru-corrected files (only the 10 Mirai-lineage scenarios exist here)
+input_files = sorted(glob.glob("../data/stage_labeled_corrected/iot23_CTU-IoT-Malware-Capture-*_with_stage.csv"))
+output_dir = "../data/sequences/flow_seq_mirai_corrected"
 os.makedirs(output_dir, exist_ok=True)
 
-print(f"Found {len(input_files)} stage-labeled files.\n")
+print(f"Found {len(input_files)} corrected stage-labeled files.\n")
+
+# CHANGED: added "Scan" - this was missing in the original script and was silently
+# dropping all Scan-stage sequences from every large file (>50MB)
+VALID_LABELS = ("Scan", "Infect", "C2", "Impact", "Benign")
 
 summary = []
 
@@ -23,7 +29,6 @@ for file_path in input_files:
 
     try:
         if size_mb <= SIZE_THRESHOLD_MB:
-            # SMALL FILE: keep every sequence, every stage
             df = pd.read_csv(file_path, low_memory=False)
             df = df.sort_values(by="ts").reset_index(drop=True)
             for col in feature_cols:
@@ -34,11 +39,12 @@ for file_path in input_files:
 
             sequences, labels = [], []
             for i in range(SEQ_LEN, len(df)):
-                sequences.append(feat_array[i-SEQ_LEN:i])
-                labels.append(stage_array[i])
+                label = stage_array[i]
+                if label in VALID_LABELS:
+                    sequences.append(feat_array[i-SEQ_LEN:i])
+                    labels.append(label)
 
         else:
-            # LARGE FILE: chunked, rare-stages-only
             sequences, labels = [], []
             leftover = None
             reader = pd.read_csv(file_path, chunksize=CHUNK_SIZE, low_memory=False)
@@ -56,7 +62,7 @@ for file_path in input_files:
 
                 for i in range(SEQ_LEN, len(chunk)):
                     label = stage_array[i]
-                    if label in ("Infect", "C2", "Impact", "Benign","Scan"):
+                    if label in VALID_LABELS:
                         sequences.append(feat_array[i-SEQ_LEN:i])
                         labels.append(label)
 
@@ -68,7 +74,7 @@ for file_path in input_files:
             continue
 
         np.savez(output_path, X=np.array(sequences), y=np.array(labels))
-        method = "full" if size_mb <= SIZE_THRESHOLD_MB else "rare-only"
+        method = "full" if size_mb <= SIZE_THRESHOLD_MB else "chunked"
         print(f"[OK] {scenario_name} ({method}, {size_mb:.1f} MB): {len(sequences)} sequences saved")
         summary.append((scenario_name, f"OK ({method})", len(sequences)))
 
