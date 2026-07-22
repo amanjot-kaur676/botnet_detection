@@ -28,7 +28,7 @@ torch.cuda.manual_seed_all(SEED)
 np.random.seed(SEED)
 
 # --- Load data ---
-data = np.load("../data/sequences/flow_sequences_mirai_richfeatures_final.npz")
+data = np.load("../data/sequences/flow_sequences_mirai_perdevice_final.npz")
 X, y = data["X"], data["y"]
 
 print(f"X shape: {X.shape}")
@@ -150,5 +150,5 @@ print(confusion_matrix(y_test_np, y_pred))
 # --- Save the model ---
 import os
 os.makedirs("../data/models", exist_ok=True)
-torch.save(model.state_dict(), "../data/models/richfeatures_lstm_stage_classifier.pt")
-print("\nModel saved to ../data/models/richfeatures_lstm_stage_classifier.pt")
+torch.save(model.state_dict(), "../data/models/perdevice_lstm_stage_classifier.pt")
+print("\nModel saved to ../data/models/perdevice_lstm_stage_classifier.pt")
