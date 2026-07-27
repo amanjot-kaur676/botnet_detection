@@ -1,0 +1,18 @@
+# Virtual environment
+.venv/
+
+# Large data files - too big for git, document how to regenerate instead
+data/raw/
+data/stage_labeled/
+data/stage_labeled_corrected/
+data/sequences/
+data/processed/
+data/models/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db

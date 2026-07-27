@@ -3,6 +3,7 @@ import numpy as np
 import glob
 import os
 import random
+import time
 from collections import deque, defaultdict
 
 SEQ_LEN = 10
@@ -131,11 +132,17 @@ for file_path in input_files:
 
         reader = pd.read_csv(file_path, usecols=needed_cols, chunksize=CHUNK_SIZE, low_memory=False)
         chunk_num = 0
+        start_time = time.time()
         for chunk in reader:
             chunk_num += 1
             process_chunk_per_device(chunk, leftover_by_device, reservoir)
             if chunk_num % 10 == 0:
-                print(f"  ...processed {chunk_num} chunks ({chunk_num * CHUNK_SIZE:,} rows so far)")
+                elapsed = time.time() - start_time
+                rows_done = chunk_num * CHUNK_SIZE
+                rate = rows_done / elapsed
+                pct_of_file = min(100, rows_done / (size_mb * 1024 * 1024 / 500) * 100)  # rough estimate, ~500 bytes/row
+                print(f"  ...processed {chunk_num} chunks ({rows_done:,} rows), "
+                      f"{elapsed:.0f}s elapsed, ~{rate:,.0f} rows/sec, ~{pct_of_file:.0f}% of file done")
 
         sequences, labels = reservoir.export()
 
