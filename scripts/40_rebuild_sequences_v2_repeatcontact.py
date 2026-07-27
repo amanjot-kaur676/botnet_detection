@@ -67,7 +67,7 @@ def compute_device_feature_matrix(combined):
     # both computed in the same O(n) single pass using a deque + frequency counter
     dests = combined["id.resp_h"].to_numpy()
     unique_counts = np.zeros(n, dtype=float)
-    repeat_counts = np.zeros(n, dtype=float)  # NEW: how many times the most-contacted destination repeats in the window
+    repeat_counts = np.zeros(n, dtype=float)
     window = deque()
     freq = defaultdict(int)
     unique_so_far = 0
@@ -82,6 +82,12 @@ def compute_device_feature_matrix(combined):
             freq[old] -= 1
             if freq[old] == 0:
                 unique_so_far -= 1
+                del freq[old]  # CRITICAL FIX: actually remove the key, don't just zero it out.
+                                # Without this, freq keeps every destination ever seen by this
+                                # device, and max(freq.values()) below scans the WHOLE history
+                                # instead of just the current ~10-row window - this was the
+                                # bug causing catastrophic slowdown, especially on scan-heavy
+                                # scenarios with huge numbers of distinct destinations.
         unique_counts[idx] = unique_so_far
         repeat_counts[idx] = max(freq.values()) if freq else 0
 
