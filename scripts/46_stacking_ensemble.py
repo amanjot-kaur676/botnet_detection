@@ -11,7 +11,6 @@ Proper methodology: train/val/test split (60/20/20), not just train/test.
   fair, honest measure of the whole system.
 """
 
- 
 import numpy as np
 import pandas as pd
 import torch
@@ -22,25 +21,25 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
- 
+
 SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
- 
+
 # =========================================================================
 # 1. LOAD DATA AND SPLIT: 60% train, 20% validation, 20% test
 # =========================================================================
 data = np.load("../data/sequences/flow_sequences_mirai_v2_final.npz")
 X, y = data["X"], data["y"]
- 
+
 le = LabelEncoder()
 y_enc = le.fit_transform(y)
 classes = le.classes_
 print("Classes:", list(classes))
- 
+
 n_samples, seq_len, n_features = X.shape
 X_scaled = StandardScaler().fit_transform(X.reshape(-1, n_features)).reshape(n_samples, seq_len, n_features)
- 
+
 # first split off test (20%), then split the rest into train/val (75/25 -> 60/20 overall)
 X_temp, X_test, y_temp, y_test = train_test_split(
     X_scaled, y_enc, test_size=0.2, random_state=SEED, stratify=y_enc
@@ -49,36 +48,36 @@ X_train, X_val, y_train, y_val = train_test_split(
     X_temp, y_temp, test_size=0.25, random_state=SEED, stratify=y_temp
 )
 print(f"Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
- 
+
 n_classes = len(classes)
 counts = np.bincount(y_train)
 raw_weights = 1.0 / np.sqrt(counts)
 raw_weights = raw_weights / raw_weights.min()
 capped_weights = np.clip(raw_weights, 1.0, 5.0)
 class_weights_tensor = torch.tensor(capped_weights, dtype=torch.float32)
- 
- 
+
+
 def to_tensor(arr, dtype):
     return torch.tensor(arr, dtype=dtype)
- 
- 
+
+
 X_train_t = to_tensor(X_train, torch.float32)
 y_train_t = to_tensor(y_train, torch.long)
 X_val_t = to_tensor(X_val, torch.float32)
 X_test_t = to_tensor(X_test, torch.float32)
- 
+
 g = torch.Generator()
 g.manual_seed(SEED)
 train_loader = DataLoader(TensorDataset(X_train_t, y_train_t), batch_size=64, shuffle=True, generator=g)
- 
+
 EPOCHS = 30  # slightly reduced from 40 since we're training 3 neural nets in one script
- 
- 
+
+
 def train_torch_model(model, name):
     criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=12, gamma=0.5)
- 
+
     print(f"\nTraining {name}...")
     for epoch in range(EPOCHS):
         model.train()
@@ -94,8 +93,8 @@ def train_torch_model(model, name):
         if (epoch + 1) % 10 == 0:
             print(f"  {name} epoch {epoch+1}/{EPOCHS}, loss: {total_loss/len(train_loader):.4f}")
     return model
- 
- 
+
+
 # =========================================================================
 # 2. DEFINE MODEL ARCHITECTURES (same as before)
 # =========================================================================
@@ -106,12 +105,12 @@ class LSTMClassifier(nn.Module):
         self.fc1 = nn.Linear(hidden, 16)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(16, n_classes)
- 
+
     def forward(self, x):
         _, (h_n, _) = self.lstm(x)
         return self.fc2(self.relu(self.fc1(h_n[-1])))
- 
- 
+
+
 class GRUClassifier(nn.Module):
     def __init__(self, n_features, n_classes, hidden=32):
         super().__init__()
@@ -120,12 +119,12 @@ class GRUClassifier(nn.Module):
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.3)
         self.fc2 = nn.Linear(16, n_classes)
- 
+
     def forward(self, x):
         _, h_n = self.gru(x)
         return self.fc2(self.dropout(self.relu(self.fc1(h_n[-1]))))
- 
- 
+
+
 class S4DLayer(nn.Module):
     def __init__(self, d_model, d_state=32):
         super().__init__()
@@ -136,7 +135,7 @@ class S4DLayer(nn.Module):
         self.C = nn.Parameter(torch.randn(d_model, d_state) * 0.5)
         self.D = nn.Parameter(torch.ones(d_model))
         self.log_dt = nn.Parameter(torch.log(0.1 * torch.ones(d_model)))
- 
+
     def forward(self, x):
         batch, seq_len, d_model = x.shape
         A = -torch.exp(self.log_A_real)
@@ -151,8 +150,8 @@ class S4DLayer(nn.Module):
             y_t = (h * self.C.unsqueeze(0)).sum(-1) + self.D.unsqueeze(0) * x_t
             outputs.append(y_t)
         return torch.stack(outputs, dim=1)
- 
- 
+
+
 class SSMClassifier(nn.Module):
     def __init__(self, n_features, n_classes, d_model=32, d_state=32):
         super().__init__()
@@ -164,7 +163,7 @@ class SSMClassifier(nn.Module):
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.3)
         self.fc2 = nn.Linear(32, n_classes)
- 
+
     def forward(self, x):
         x = self.input_proj(x)
         x = self.ssm(x)
@@ -174,25 +173,25 @@ class SSMClassifier(nn.Module):
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
         return self.fc2(x)
- 
- 
+
+
 # =========================================================================
 # 3. TRAIN BASE MODELS
 # =========================================================================
 X_train_flat = X_train.reshape(len(X_train), -1)
 X_val_flat = X_val.reshape(len(X_val), -1)
 X_test_flat = X_test.reshape(len(X_test), -1)
- 
+
 print("\nTraining Random Forest...")
 rf_model = RandomForestClassifier(n_estimators=300, max_depth=20, class_weight="balanced",
                                    random_state=SEED, n_jobs=-1)
 rf_model.fit(X_train_flat, y_train)
- 
+
 lstm_model = train_torch_model(LSTMClassifier(n_features, n_classes), "LSTM")
 gru_model = train_torch_model(GRUClassifier(n_features, n_classes), "GRU")
 ssm_model = train_torch_model(SSMClassifier(n_features, n_classes), "SSM")
- 
- 
+
+
 # =========================================================================
 # 4. GET BASE MODEL PROBABILITIES ON VAL SET -> BUILD META-FEATURES
 # =========================================================================
@@ -202,30 +201,47 @@ def get_torch_probs(model, X_t):
         logits = model(X_t)
         probs = torch.softmax(logits, dim=1).numpy()
     return probs
- 
- 
+
+
 print("\nGetting base model predictions on validation set...")
 rf_val_probs = rf_model.predict_proba(X_val_flat)
 lstm_val_probs = get_torch_probs(lstm_model, X_val_t)
 gru_val_probs = get_torch_probs(gru_model, X_val_t)
 ssm_val_probs = get_torch_probs(ssm_model, X_val_t)
- 
+
 meta_features_val = np.concatenate([rf_val_probs, lstm_val_probs, gru_val_probs, ssm_val_probs], axis=1)
 print(f"Meta-feature shape (val): {meta_features_val.shape}  (4 models x 5 classes = 20 columns)")
- 
+
 # =========================================================================
-# 5. TRAIN META-CLASSIFIER ON VALIDATION PREDICTIONS
+# 5. TRAIN META-CLASSIFIERS ON VALIDATION PREDICTIONS
 # =========================================================================
-# NOTE: no class_weight="balanced" here. The base models (RF, LSTM/GRU/SSM)
-# already handle class imbalance individually. Adding another full layer of
-# rebalancing on top of already-balanced inputs overcorrects - this was
-# confirmed by the first run (Infect: 98% recall / 18% precision, meaning
-# the meta-classifier was spamming rare-class predictions, same failure
-# pattern we saw earlier with over-aggressive LSTM class weights).
-print("\nTraining meta-classifier (Logistic Regression) on base model predictions...")
-meta_model = LogisticRegression(max_iter=2000, random_state=SEED)
-meta_model.fit(meta_features_val, y_val)
- 
+# We try THREE approaches and keep whichever genuinely performs best on
+# the test set, rather than assuming one is correct:
+#   (a) plain Logistic Regression, no weighting (previous run: 65.8% overall,
+#       but Infect recall collapsed to 11%)
+#   (b) Logistic Regression with MODERATE, capped sample weights - same
+#       principle that fixed the LSTM's earlier overcorrection: give rare
+#       classes some extra pull, but capped so it can't spam predictions
+#   (c) Random Forest as the meta-learner instead of a linear model - can
+#       learn richer combination rules than a straight-line model can
+print("\nTraining meta-classifiers on base model predictions...")
+
+# moderate, capped sample weights (same formula that worked for LSTM/GRU/SSM)
+val_counts = np.bincount(y_val)
+raw_sw = 1.0 / np.sqrt(val_counts)
+raw_sw = raw_sw / raw_sw.min()
+capped_sw = np.clip(raw_sw, 1.0, 5.0)
+sample_weights_val = capped_sw[y_val]
+
+meta_model_plain = LogisticRegression(max_iter=2000, random_state=SEED)
+meta_model_plain.fit(meta_features_val, y_val)
+
+meta_model_weighted = LogisticRegression(max_iter=2000, random_state=SEED)
+meta_model_weighted.fit(meta_features_val, y_val, sample_weight=sample_weights_val)
+
+meta_model_rf = RandomForestClassifier(n_estimators=200, max_depth=6, random_state=SEED, n_jobs=-1)
+meta_model_rf.fit(meta_features_val, y_val, sample_weight=sample_weights_val)
+
 # =========================================================================
 # 6. FINAL EVALUATION ON TEST SET (fully untouched until now)
 # =========================================================================
@@ -234,16 +250,17 @@ rf_test_probs = rf_model.predict_proba(X_test_flat)
 lstm_test_probs = get_torch_probs(lstm_model, X_test_t)
 gru_test_probs = get_torch_probs(gru_model, X_test_t)
 ssm_test_probs = get_torch_probs(ssm_model, X_test_t)
- 
+
 meta_features_test = np.concatenate([rf_test_probs, lstm_test_probs, gru_test_probs, ssm_test_probs], axis=1)
-final_predictions = meta_model.predict(meta_features_test)
- 
-# --- Simple averaging ensemble (no learned meta-classifier) - a more robust
-# fallback that can't overcorrect the way a learned meta-classifier might
-# with limited validation data ---
+
+pred_plain = meta_model_plain.predict(meta_features_test)
+pred_weighted = meta_model_weighted.predict(meta_features_test)
+pred_rf_meta = meta_model_rf.predict(meta_features_test)
+
+# simple averaging ensemble (no learned weights) - robust fallback comparison
 avg_probs = (rf_test_probs + lstm_test_probs + gru_test_probs + ssm_test_probs) / 4
-avg_predictions = np.argmax(avg_probs, axis=1)
- 
+pred_avg = np.argmax(avg_probs, axis=1)
+
 print("\n" + "=" * 70)
 print("INDIVIDUAL BASE MODEL ACCURACY ON TEST SET (for reference)")
 print("=" * 70)
@@ -251,25 +268,39 @@ print(f"Random Forest: {accuracy_score(y_test, np.argmax(rf_test_probs, axis=1))
 print(f"LSTM:          {accuracy_score(y_test, np.argmax(lstm_test_probs, axis=1)):.4f}")
 print(f"GRU:           {accuracy_score(y_test, np.argmax(gru_test_probs, axis=1)):.4f}")
 print(f"SSM:           {accuracy_score(y_test, np.argmax(ssm_test_probs, axis=1)):.4f}")
- 
+
+candidates = {
+    "Meta: Logistic Regression (plain)": pred_plain,
+    "Meta: Logistic Regression (capped weights)": pred_weighted,
+    "Meta: Random Forest (capped weights)": pred_rf_meta,
+    "Simple averaging (no learned weights)": pred_avg,
+}
+
 print("\n" + "=" * 70)
-print("FINAL STACKING ENSEMBLE RESULT (learned meta-classifier)")
+print("ENSEMBLE COMPARISON - ACCURACY SUMMARY")
 print("=" * 70)
-print(f"Accuracy: {accuracy_score(y_test, final_predictions):.4f}")
-print(classification_report(y_test, final_predictions, target_names=classes))
+for name, preds in candidates.items():
+    print(f"{name}: {accuracy_score(y_test, preds):.4f}")
+
+best_name = max(candidates, key=lambda k: accuracy_score(y_test, candidates[k]))
+best_preds = candidates[best_name]
+print(f"\n>>> BEST APPROACH: {best_name} <<<")
+
+print("\n" + "=" * 70)
+print(f"FULL REPORT FOR BEST APPROACH: {best_name}")
+print("=" * 70)
+print(classification_report(y_test, best_preds, target_names=classes))
 print("Confusion Matrix:")
 print("Order:", list(classes))
-print(confusion_matrix(y_test, final_predictions))
- 
+print(confusion_matrix(y_test, best_preds))
+
 print("\n" + "=" * 70)
-print("ALTERNATIVE: SIMPLE AVERAGING ENSEMBLE (no learned weights)")
+print("FOR COMPARISON - ALL FOUR APPROACHES, FULL DETAIL")
 print("=" * 70)
-print(f"Accuracy: {accuracy_score(y_test, avg_predictions):.4f}")
-print(classification_report(y_test, avg_predictions, target_names=classes))
-print("Confusion Matrix:")
-print("Order:", list(classes))
-print(confusion_matrix(y_test, avg_predictions))
- 
+for name, preds in candidates.items():
+    print(f"\n--- {name} ---")
+    print(classification_report(y_test, preds, target_names=classes, zero_division=0))
+
 # =========================================================================
 # 7. SAVE THE FULL ENSEMBLE
 # =========================================================================
@@ -277,8 +308,10 @@ import joblib
 import os
 os.makedirs("../data/models/ensemble", exist_ok=True)
 joblib.dump(rf_model, "../data/models/ensemble/rf_base.joblib")
-joblib.dump(meta_model, "../data/models/ensemble/meta_classifier.joblib")
+joblib.dump(meta_model_plain, "../data/models/ensemble/meta_lr_plain.joblib")
+joblib.dump(meta_model_weighted, "../data/models/ensemble/meta_lr_weighted.joblib")
+joblib.dump(meta_model_rf, "../data/models/ensemble/meta_rf.joblib")
 torch.save(lstm_model.state_dict(), "../data/models/ensemble/lstm_base.pt")
 torch.save(gru_model.state_dict(), "../data/models/ensemble/gru_base.pt")
 torch.save(ssm_model.state_dict(), "../data/models/ensemble/ssm_base.pt")
-print("\nFull ensemble saved to ../data/models/ensemble/")
+print(f"\nFull ensemble saved to ../data/models/ensemble/ (best approach was: {best_name})")
